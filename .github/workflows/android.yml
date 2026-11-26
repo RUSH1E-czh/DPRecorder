@@ -1,57 +1,147 @@
 name: android
 
-# 安卓包只在这里（或本地 PC）验证：手机上没有 NDK，跑不了交叉编译。
-# 手动触发，避免每次 push 都跑一遍十分钟的构建。
+# 安卓包在 GitHub 的 runner 上编（手机上没有 NDK，跑不了交叉编译）。
+# 推 DPR / DPS 的改动会自动跑一次；也可以手动触发。
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Rust 目标三元组（aarch64 = 绝大多数真机）"
+        description: "Rust 目标（aarch64 = 绝大多数真机）"
         required: false
         default: aarch64
+  push:
+    paths:
+      - "DPR/src-tauri/**"
+      - "DPS/dps/**"
+      - "DPR/src/**"
+      - "DPR/package.json"
+      - "DPR/pnpm-lock.yaml"
+      - "DPR/tauri.conf.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/android.yml"
 
 concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: "26.1.10909125"
+  ANDROID_TARGET: aarch64
+
 jobs:
-  build:
+  # 先只做类型检查：它比完整打包快，出错也更快看到。
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 JDK 17
+      - name: JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: 安装 Node 20 + pnpm
+      - name: Node 20 + pnpm
         uses: actions/setup-node@v4
         with:
           node-version: "20"
       - run: corepack enable && corepack prepare pnpm@9 --activate
 
-      - name: 安装 Android SDK / NDK
+      - name: Android SDK + NDK
         uses: android-actions/setup-android@v3
-      - name: 安装 NDK
+      - name: 装 NDK
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;26.1.10909125" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: 安装 Rust 与安卓目标
+      - name: 交叉编译工具链
+        run: |
+          NDK="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+
+      - name: Rust + 安卓目标
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
-      - name: 缓存 cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
-      - name: 安装 tauri-cli
+      - name: tauri-cli
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          cargo tauri --version
+
+      - name: 前端依赖与产物
+        run: |
+          pnpm --dir DPR install --frozen-lockfile
+          pnpm --dir DPR build
+
+      - name: 生成安卓工程
+        working-directory: DPR
+        run: cargo tauri android init --ci
+
+      - name: cargo check（安卓目标）
+        working-directory: DPR
+        run: cargo check -p dpr --target aarch64-linux-android --message-format short
+
+  apk:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Node 20 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: corepack enable && corepack prepare pnpm@9 --activate
+
+      - name: Android SDK + NDK
+        uses: android-actions/setup-android@v3
+      - name: 装 NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 交叉编译工具链
+        run: |
+          NDK="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+
+      - name: Rust + 安卓目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: 前端依赖与产物
@@ -59,17 +149,27 @@ jobs:
           pnpm --dir DPR install --frozen-lockfile
           pnpm --dir DPR build
 
-      - name: 生成安卓工程并打包
+      - name: 生成安卓工程
+        working-directory: DPR
+        run: cargo tauri android init --ci
+
+      - name: 打包 APK
         working-directory: DPR
         run: |
-          cargo tauri android init --ci
-          cargo tauri android build --target "${{ github.event.inputs.target || 'aarch64' }}" --apk
+          cargo tauri android build \
+            --target "${{ github.event.inputs.target || env.ANDROID_TARGET }}" \
+            --apk
+
+      - name: 收集 APK
+        run: |
+          mkdir -p out
+          find DPR/gen/android -name "*.apk" -print -exec cp {} out/ \; || true
+          find target -name "*.apk" -print -exec cp {} out/ \; || true
+          ls -l out
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
           name: dpr-android-apk
-          path: |
-            target/**/release/apk/*.apk
-            DPR/gen/android/app/build/outputs/apk/**/*.apk
+          path: out/*.apk
           if-no-files-found: warn
