@@ -95,7 +95,9 @@ jobs:
         working-directory: DPR
         run: |
           pnpm install --frozen-lockfile --ignore-workspace
-          pnpm build
+          # `pnpm run` 同样会去读 pnpm-workspace.yaml（照样报 packages 字段缺失），
+          # 所以脚本用 npm 跑：node_modules 是 pnpm 装好的，npm 只负责跑 scripts。
+          npm run build
 
       - name: 生成安卓工程
         working-directory: DPR
@@ -176,7 +178,9 @@ jobs:
         working-directory: DPR
         run: |
           pnpm install --frozen-lockfile --ignore-workspace
-          pnpm build
+          # `pnpm run` 同样会去读 pnpm-workspace.yaml（照样报 packages 字段缺失），
+          # 所以脚本用 npm 跑：node_modules 是 pnpm 装好的，npm 只负责跑 scripts。
+          npm run build
 
       - name: 生成安卓工程
         working-directory: DPR
