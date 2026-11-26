@@ -18,6 +18,7 @@ import { AnsiUp } from 'ansi_up';
 const ansi = new AnsiUp()
 
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import { isMobile } from "./platform";
 import { useStorage } from '@vueuse/core';
 
 import CfgSwitch from './components/CfgSwitch.vue';
@@ -712,6 +713,8 @@ async function removeTask(removeFile: boolean = false) {
 function dragOutput(event: DragEvent, task: Task) {
   event.preventDefault();
   if (task.status.type !== 'done') return;
+  // 移动端没有「拖到资源管理器」这回事：插件在安卓上根本不存在，调了只会抛错。
+  if (isMobile()) return;
   startDrag({ item: [task.output], icon: task.cover })
 }
 /** 展开的任务 id（任务卡片做成下拉栏，默认只显示小曲绘 / 进度条 / 曲名 / 难度） */

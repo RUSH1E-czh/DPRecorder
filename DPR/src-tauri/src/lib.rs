@@ -50,6 +50,8 @@ use std::{
 };
 use task::{TaskQueue, TaskView};
 use tauri::{ipc::InvokeError, Emitter, Manager, State, WindowEvent};
+// 这个插件只在桌面装（见 `run()` 里的 builder 链），移动端不编译它。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_prevent_default::Flags;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
@@ -283,7 +285,8 @@ pub fn run() -> Result<()> {
     let zh_cn: dps::l10n::LanguageIdentifier = "zh-CN".parse()?;
     dps::l10n::set_prefered_locale(Some(zh_cn));
 
-    // 必须在 tauri::Builder::build() 之前设置
+    // 必须在 tauri::Builder::build() 之前设置（只有 Windows 的 WebView2 要这一手）
+    #[cfg(target_os = "windows")]
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             ensure_webview_data_dir(dir);
@@ -295,6 +298,7 @@ pub fn run() -> Result<()> {
     // 桌面程序自己的窗口不需要这条策略，于是在建 WebView2 环境之前就把它加进启动参数
     // （WebView2 只认环境创建时的那一份，两个窗口各传一份会撞 0x8007139F）。
     // 调试时外部已经用这个变量传了别的参数（比如 --remote-debugging-port），就在后面追加。
+    #[cfg(target_os = "windows")]
     {
         let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         if !args.contains("autoplay-policy") {
@@ -313,23 +317,30 @@ pub fn run() -> Result<()> {
         .unwrap();
     let _guard = rt.enter();
 
-    let app =
-        tauri::Builder::default()
-            .plugin(tauri_plugin_os::init())
-            .plugin(tauri_plugin_fs::init())
-            .plugin(tauri_plugin_http::init())
-            .plugin(tauri_plugin_shell::init())
-            .plugin(tauri_plugin_dialog::init())
-            .plugin(tauri_plugin_drag::init())
-            .plugin(tauri_plugin_opener::init())
-            .plugin(
-                tauri_plugin_prevent_default::Builder::new()
-                    .with_flags(Flags::all().difference(
-                        Flags::FIND | Flags::RELOAD | Flags::FOCUS_MOVE | Flags::DEV_TOOLS,
-                    ))
-                    .build(),
-            )
-            .manage(TaskQueue::new())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
+
+    // 桌面专属的两个插件：把文件拖到资源管理器（`tauri-plugin-drag`）、拦掉 WebView 的
+    // 默认快捷键（`tauri-plugin-prevent-default`）。移动端没有对等能力、插件本身也不支持，
+    // 直接不装 —— 前端按平台判断后再调（见 `DPR/src/platform.ts`）。
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder
+        .plugin(tauri_plugin_drag::init())
+        .plugin(
+            tauri_plugin_prevent_default::Builder::new()
+                .with_flags(Flags::all().difference(
+                    Flags::FIND | Flags::RELOAD | Flags::FOCUS_MOVE | Flags::DEV_TOOLS,
+                ))
+                .build(),
+        );
+
+    let app = builder
+        .manage(TaskQueue::new())
             .invoke_handler(tauri::generate_handler![
                 exit_program,
                 open_output_folder,
@@ -450,8 +461,15 @@ pub fn run() -> Result<()> {
             .expect("error while running tauri application");
 
     let resolver = app.path();
-    let exe = std::env::current_exe()?;
-    let exe_dir = exe.parent().unwrap();
+    // 安卓上没有 exe 目录。先把「程序目录」定成应用私有数据区（`common::android_root`
+    // 靠 TMPDIR 也能算出来，这里用 Tauri 给的那份覆盖掉，和 WebView 的数据同源）。
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(dir) = resolver.app_data_dir() {
+            common::set_android_root(dir);
+        }
+    }
+    let exe_dir = common::exe_dir().context("定位程序目录失败")?;
 
     // 便携优先：**用户会直接看到的目录一律先放在程序所在文件夹**
     // ——`config/`（设置与预设）、`respack/`（资源包）、`output/`（渲染输出）、`tmp/`（临时
@@ -647,6 +665,8 @@ pub fn run() -> Result<()> {
         hide_cmd();
     }
 
+    // 事件循环：桌面自己跑，安卓/iOS 由系统驱动（`mobile_entry_point` 起的那条线程）。
+    // 两端都调 `run` —— 移动端它会挂住直到系统回收，和 Tauri 模板里 `Builder::run` 的行为一致。
     app.run(|_, _| {});
 
     Ok(())
@@ -673,13 +693,15 @@ fn exit_program(code: i32) {
     std::process::exit(code);
 }
 
-/// `.pez` 默认打开方式在注册表里的 ProgID。
+/// `.pez` 默认打开方式在注册表里的 ProgID。只有 Windows 的关联实现用得到。
+#[cfg(target_os = "windows")]
 const PEZ_PROG_ID: &str = "DPRecorder.pez";
 
 /// 用 `reg.exe` 写一个字符串值；`name` 为空串表示写键的默认值（`/ve`）。
 ///
 /// 走 `reg.exe` 而不是直接调 `RegSetValueExW`：这里只写几个 `HKCU` 下的键，
 /// 命令行够用，也不用把 winapi 的注册表句柄与错误码再包一层。
+#[cfg(target_os = "windows")]
 fn reg_set_string(key: &str, name: &str, value: &str) -> Result<()> {
     let mut cmd = std::process::Command::new("reg");
     cmd.arg("add").arg(key);
@@ -707,6 +729,7 @@ fn reg_set_string(key: &str, name: &str, value: &str) -> Result<()> {
 }
 
 /// 某个键下有没有指定值（看 `reg query` 的退出码，不解析输出）。
+#[cfg(target_os = "windows")]
 fn reg_has_value(key: &str, name: &str) -> bool {
     let mut cmd = std::process::Command::new("reg");
     cmd.arg("query").arg(key).arg("/v").arg(name);
@@ -730,6 +753,7 @@ fn reg_has_value(key: &str, name: &str) -> bool {
 /// `Software\Classes\.pez` 的默认值：有它时本函数**不动**默认值，只把候选补上并返回
 /// `"blocked"`，由前端把用户引到系统的默认应用页去手选；没有它才顺手把默认值写成
 /// 本 ProgID，返回 `"applied"`。
+#[cfg(target_os = "windows")]
 #[tauri::command]
 fn set_pez_default() -> Result<String, InvokeError> {
     (|| {
@@ -810,7 +834,20 @@ fn set_pez_default() -> Result<String, InvokeError> {
     .map_err(InvokeError::from_anyhow)
 }
 
+/// 非 Windows：没有「写注册表把扩展名指到本程序」这回事。
+///
+/// 安卓上 APK 由系统按 Intent 分派、扩展名也不映射 MIME；Linux/macOS 本来就没实现过
+/// （`reg.exe` 那条路是 Windows 专属）。命令保留同名，前端那一页照常能调，
+/// 只是明确告诉界面「这里没有这回事」，而不是一个 invoke 失败。
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn set_pez_default() -> Result<String, InvokeError> {
+    info!("[关联] 当前平台不支持文件关联，返回 unsupported");
+    Ok("unsupported".to_string())
+}
+
 /// 打开 Windows 的「默认应用」设置页，供 `set_pez_default` 被 UserChoice 挡住时兜底。
+#[cfg(target_os = "windows")]
 #[tauri::command]
 fn open_default_apps_settings() -> Result<(), InvokeError> {
     (|| {
@@ -818,6 +855,15 @@ fn open_default_apps_settings() -> Result<(), InvokeError> {
         Ok(())
     })()
     .map_err(InvokeError::from_anyhow)
+}
+
+/// 非 Windows 没有「默认应用」设置页可跳（安卓的文件关联由系统按 MIME 分派）。
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn open_default_apps_settings() -> Result<(), InvokeError> {
+    Err(InvokeError::from_anyhow(anyhow::anyhow!(
+        "当前平台没有「默认应用」设置页，文件关联由系统自行管理"
+    )))
 }
 
 /// 用资源管理器打开一个**目录**。
@@ -848,7 +894,17 @@ fn open_folder(path: &Path) -> Result<()> {
         bail!("not a directory: {}", path.display());
     }
 
-    #[cfg(not(target_os = "windows"))]
+    // 安卓上没有「用文件管理器打开某个目录」这回事：应用私有目录别的应用进不去，
+    // 系统也不给应用拉起文件管理器定位某个路径的接口。要拿文件请走「导出到共享存储」。
+    #[cfg(target_os = "android")]
+    {
+        bail!(
+            "安卓上不能直接打开文件夹：{}（请用「导出」把文件写到共享存储）",
+            path.display()
+        );
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
         return open::that_detached(path).map_err(|err| anyhow::anyhow!("{err}"));
     }
@@ -1041,7 +1097,7 @@ fn open_output_folder() -> Result<(), InvokeError> {
 /// `msedge.exe` 进程数始终是 0）。所以它只能当兜底，绝不能放在 `cmd /c start` 前面 —— 放前面
 /// 时它那句「成功」会直接把后面的路全部吃掉，用户看到的就是「点了没反应」。
 #[tauri::command]
-fn open_external(url: String) -> Result<(), InvokeError> {
+fn open_external(url: String, app: tauri::AppHandle) -> Result<(), InvokeError> {
     (|| {
         let lower = url.to_ascii_lowercase();
         let allowed = lower.starts_with("http://")
@@ -1058,6 +1114,19 @@ fn open_external(url: String) -> Result<(), InvokeError> {
         info!("[目录] 打开外部链接 {}", url);
         open_log(&format!("--- open_external url={url}"));
 
+        // 安卓：交给系统的 Intent（`ACTION_VIEW`），浏览器、邮件客户端都由它对号入座。
+        #[cfg(target_os = "android")]
+        {
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(url.clone(), None::<&str>)
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            open_log(&format!("android ACTION_VIEW ok url={url}"));
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
         let mut fails: Vec<String> = Vec::new();
 
         match start_via_cmd(&url) {
@@ -1098,6 +1167,14 @@ fn open_external(url: String) -> Result<(), InvokeError> {
 
         open_log(&format!("all failed: {}", fails.join(" | ")));
         bail!("failed to open {}: {}", url, fails.join(" | "))
+        }
+
+        // 其余桌面平台（macOS / Linux）：`open` crate 就够了。
+        #[cfg(not(any(target_os = "windows", target_os = "android")))]
+        {
+            open::that_detached(&url).map_err(|err| anyhow::anyhow!("{err}"))?;
+            Ok(())
+        }
     })()
     .map_err(InvokeError::from_anyhow)
 }
@@ -1148,6 +1225,7 @@ fn shell_execute(
 /// `cmd /c start "" <url>`：**主路**。cmd 有自己的消息泵，`start` 按系统关联唤起默认浏览器。
 /// 命令行照平时那样传参数即可（Rust 会把那个空串转义成 `""`，这条命令确实把请求送到了
 /// Edge，别改成 `raw_arg` 手拼——那是没验证过的写法）。
+#[cfg(target_os = "windows")]
 fn start_via_cmd(url: &str) -> anyhow::Result<String> {
     use std::os::windows::process::CommandExt;
     let mut cmd = std::process::Command::new("cmd");
@@ -1161,6 +1239,7 @@ fn start_via_cmd(url: &str) -> anyhow::Result<String> {
 }
 
 /// `rundll32 url.dll,FileProtocolHandler <url>`：最老牌的「用系统默认程序打开」路子。
+#[cfg(target_os = "windows")]
 fn start_via_rundll32(url: &str) -> anyhow::Result<String> {
     use std::os::windows::process::CommandExt;
     let mut cmd = std::process::Command::new("rundll32");
@@ -1174,6 +1253,7 @@ fn start_via_rundll32(url: &str) -> anyhow::Result<String> {
 
 /// 起一个「只是去把活交给系统」的进程，最多等 1.5 秒看它自己退不退；超时说明它还在
 /// 干活（也可能已经把活交出去了），当成成功，别把用户卡在这儿。
+#[cfg(target_os = "windows")]
 fn run_briefly(mut cmd: std::process::Command, what: &str) -> anyhow::Result<String> {
     let mut child = cmd.spawn().with_context(|| format!("spawn {what}"))?;
     let pid = child.id();

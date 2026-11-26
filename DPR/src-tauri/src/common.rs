@@ -138,7 +138,42 @@ pub fn is_dir_writable(dir: &Path) -> bool {
     }
 }
 
+/// 安卓上的「程序目录」。
+///
+/// APK 里的程序不会解到某个可写目录，进程能写的只有应用私有数据区
+/// `/data/user/0/<包名>/files`。系统会给每个应用进程设 `TMPDIR`
+/// （同一份数据下的 `cache` 子目录），拿它的父目录就是 `files`；`lib.rs` 在
+/// `Builder::build()` 之后还会用 Tauri 的 `app_data_dir()` 覆盖一次（那里更权威，
+/// 也保证和 WebView 的数据目录是同一棵）。
+#[cfg(target_os = "android")]
+pub static ANDROID_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub fn set_android_root(dir: PathBuf) {
+    let _ = ANDROID_ROOT.set(dir);
+}
+
+#[cfg(target_os = "android")]
+pub fn android_root() -> Option<PathBuf> {
+    if let Some(root) = ANDROID_ROOT.get() {
+        return Some(root.clone());
+    }
+    // 形如 `TMPDIR=/data/user/0/<包名>/cache`
+    let cache = PathBuf::from(std::env::var_os("TMPDIR")?);
+    cache.parent().map(Path::to_path_buf)
+}
+
 /// exe 所在目录（受限环境里的兜底写点都挨着它）。
+///
+/// 安卓上没有 exe：这里换成应用私有数据目录，`config/`、`output/`、`tmp/`、`logs/`
+/// 这些「程序目录下的邻居」因此一并落到可写的地方，调用方不用改。
+#[cfg(target_os = "android")]
+pub fn exe_dir() -> Option<PathBuf> {
+    android_root()
+}
+
+/// exe 所在目录（受限环境里的兜底写点都挨着它）。
+#[cfg(not(target_os = "android"))]
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()

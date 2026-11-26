@@ -14,6 +14,7 @@ name = "dpr_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 # 可执行文件名跟产品名走：安装包、`.pez` 文件关联和「程序目录」都按这个名字找。
+# 安卓上没有 exe：那边只编 `dpr_lib`（cdylib）打进 APK，这一段不参与。
 [[bin]]
 name = "DPRecorder"
 path = "src/main.rs"
@@ -26,38 +27,31 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1.0.138"
 toml = "0.7.3"
 serde = { version = "1.0.217", features = ["derive"] }
-tauri = { version = "2.9.4", features = [ "protocol-asset", "tray-icon"] }
+# 托盘图标（`tray-icon`）本项目没用到，而且它在移动端编不过 —— 只保留 protocol-asset。
+tauri = { version = "2.9.4", features = ["protocol-asset"] }
 
 anyhow = { version = "1.0.95", features = ["backtrace"] }
 macroquad = { git = "https://github.com/2278535805/prpr-macroquad", default-features = false }
-#dps = { git = "https://github.com/2278535805/DPS", package = "dps", default-features = false, features = ["log", "video"] }
-dps = { path = "../../DPS/dps", default-features = false, features = ["log", "video"] }
-
-sasa = { git = "https://github.com/2278535805/sasa" }
 tokio = { version = "1.45.0", features = ["process", "rt-multi-thread", "fs", "io-util"] }
 tracing = "0.1.37"
 tempfile = "3.16.0"
 chrono = "0.4.28"
 open = "5.3.2"
 fs4 = { version = "0.6.6", features = ["tokio-async"] }
-winapi = { version = "0.3", features = ["wincon", "consoleapi", "processenv", "winuser", "shellapi", "winreg"] }
 tauri-plugin-shell = "2.3.3"
 # 关掉 cookies 特性：它在 plugin setup 阶段就要往 app_cache_dir() 写 .cookies，
-# 一旦该目录不可写（受限/沙箱环境）整个 app 会在 tauri::Builder::build() 阶段直接 panic。
+# 一旦该目录不可写（受限／沙箱环境）整个 app 会在 tauri::Builder::build() 阶段直接 panic。
 # 前端只用 plugin-http 查更新，不需要 cookie 持久化。
 tauri-plugin-http = { version = "2.5.4", default-features = false, features = ["rustls-tls", "http2", "charset", "macos-system-configuration"] }
 tauri-plugin-fs = "2.4.4"
 tauri-plugin-os = "2.3.2"
 regex = "1.9.6"
-tauri-plugin-cli = "2.4.1"
 tauri-plugin-dialog = "2.4.2"
 zip = { version = "8.3.0", default-features = false, features = ["deflate-flate2"] }
 serde_yaml = "0.9.21"
-tauri-plugin-prevent-default = "2.0.0"
 ndarray = "0.16.1"
 humantime = "2.2.0"
 rand = "0.9.1"
-tauri-plugin-drag = "2.1.0"
 tauri-plugin-opener = "2"
 rustc-hash = "2.1.2"
 # 歌词文件的编码不一定是 UTF-8（LRC 里 GBK 很常见）：chardetng 猜、encoding_rs 解
@@ -65,6 +59,34 @@ chardetng = "0.1.17"
 encoding_rs = "0.8.42"
 # sysinfo = "0.29.0"
 
+# ── 桌面（Windows / macOS / Linux）────────────────────────────────────────────
+# 安卓上这些依赖要么编不过（winapi），要么没有对等的系统能力（拖动文件、阻止默认快捷键），
+# 所以按 target 分流。`docs/ANDROID.md` 里有这份分流的来龙去脉。
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-cli = "2.4.1"
+tauri-plugin-drag = "2.1.0"
+tauri-plugin-prevent-default = "2.0.0"
+# 桌面出片走**外部 ffmpeg 命令行**（render.rs 里 100 多处），引擎因此要带 video 特性。
+dps = { path = "../../DPS/dps", default-features = false, features = ["log", "video"] }
+sasa = { git = "https://github.com/2278535805/sasa" }
+
+[target.'cfg(windows)'.dependencies]
+# 隐藏控制台窗口、按标题找窗口、ShellExecuteExW、SetEnvironmentVariableW、注册表。
+winapi = { version = "0.3", features = ["wincon", "consoleapi", "processenv", "winuser", "shellapi", "winreg"] }
+
+# ── 安卓 ─────────────────────────────────────────────────────────────────────
+# 引擎（dps）本身早就支持安卓（它是从 Phira 来的），但 `prpr-avc` 需要按目标平台编译的
+# FFmpeg 静态库 —— 仓库里没有 aarch64-linux-android 那一份，而安卓上又**没有可执行的
+# ffmpeg 进程**可用（应用私有目录禁止 exec）。所以安卓这一侧先不开 video 特性：
+# 谱面解析、编辑、预览数据链路照常，出片（视频编码）留到进程内编码接进来之后。
+[target.'cfg(target_os = "android")'.dependencies]
+dps = { path = "../../DPS/dps", default-features = false, features = ["log"] }
+# 安卓的音频后端是 oboe（AAudio），和 dps-ui 里的写法保持一致。
+sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["oboe"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+dps = { path = "../../DPS/dps", default-features = false, features = ["log"] }
+sasa = { git = "https://github.com/2278535805/sasa" }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]
-

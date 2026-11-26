@@ -10,6 +10,7 @@
 | `DPS/` | 引擎与播放器，5 个 crate：`dps`（核心库）、`dps-ui`、`dps-main`（瘦入口 exe）、`prpr-avc`（音视频编解码）、`prpr-pbc`（谱面转换 CLI） |
 | `DPR/` | Tauri 2 桌面端：`DPR/src/` 是 Vue 3 + Vuetify 界面（顶部 `Render` / `Editor` 切换），`DPR/src-tauri/` 是 Rust 后端（crate `dpr`，exe `DPRecorder.exe`；编辑器的预览窗口也由它拉起，代码在 `src/dpe/`） |
 | `assets/` | 随仓库分发的运行资源（默认皮肤、字体、音效、图标） |
+| `docs/ANDROID.md` | 安卓移植的进度、方案与构建步骤（未完成的部分写得很清楚，别当成「已经能装」） |
 | `Cargo.toml` | 工作区根，6 个成员：`DPS/` 的 5 个 + `DPR/src-tauri` |
 
 ## fork 网络
@@ -55,6 +56,7 @@ cargo tauri build               # 出安装包 → <仓库根>\target\release\bu
 - `cargo build -p dpr` 默认是 dev 形态（不把前端打进 exe，加载 `devUrl`，要配合 `pnpm dev`）；正式形态带 `--features custom-protocol`，`cargo tauri build` 就是。改过前端要先 `pnpm build` 才会进 exe。
 - `prpr-avc` 需要的 FFmpeg 静态库**不在仓库里**（`DPS/prpr-avc/static-lib/<TARGET>/`，可用 `PRPR_AVC_LIBS` 覆盖），缺了编不过。
 - `target/` 默认在仓库根、已被 `.gitignore` 排除。DPR 的运行时工作目录跟着 exe 走（`assets/`、`config.toml`、`appendant/`、`output/`、`logs/` 等都在 exe 旁边）。
+- 安卓：`cd DPR && cargo tauri android init` 之后再 `cargo tauri android build --target aarch64 --apk`。壳（界面 + 后端的非渲染部分）已经跨平台化，**引擎渲染与出片还没接上**，进度与剩余工作见 [`docs/ANDROID.md`](docs/ANDROID.md)。
 
 ## 许可与出处
 
