@@ -523,7 +523,9 @@ pub fn run() -> Result<()> {
     ASSET_PATH.set(asset_dir.clone()).ok();
 
     let config = common::read_config()?;
-    let is_gui = std::env::args().len() == 1;
+    // 安卓的进程参数由系统给（`app_process` 那套），不是我们自己的命令行：
+    // 只有桌面才用「没有参数 = GUI」这条判断。
+    let is_gui = cfg!(target_os = "android") || std::env::args().len() == 1;
 
     // 上次的队列等配置目录登记好之后再读回：`TaskQueue::new()` 比这里早，那时还没有
     // `CONFIG_DIR`，读不到 tasks.json。只有 GUI 进程管这个队列 —— CLI 的渲染 / 预览进程
@@ -603,7 +605,7 @@ pub fn run() -> Result<()> {
         log::startup_banner("DPRecorder", &[("配置", &config_dir), ("输出", &output), ("日志", &logs)]);
     }
 
-    if std::env::args().len() > 1 {
+    if !cfg!(target_os = "android") && std::env::args().len() > 1 {
         match std::env::args().nth(1).as_deref().unwrap_or_default() {
             "help" | "--help" | "-help" | "/help" | "-h" | "?" | "--?" | "-?" | "/?" => {
                 println!("用法: DPRecorder --render --input <谱面文件> [选项]");
@@ -1118,9 +1120,10 @@ fn open_external(url: String, app: tauri::AppHandle) -> Result<(), InvokeError> 
         #[cfg(target_os = "android")]
         {
             use tauri_plugin_opener::OpenerExt;
-            app.opener()
-                .open_url(url.clone(), None::<&str>)
-                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            if let Err(err) = app.opener().open_url(url.clone(), None::<&str>) {
+                open_log(&format!("android ACTION_VIEW failed: {err}"));
+                return Err(InvokeError::from_anyhow(anyhow::anyhow!("{err}")));
+            }
             open_log(&format!("android ACTION_VIEW ok url={url}"));
             return Ok(());
         }
@@ -1172,7 +1175,9 @@ fn open_external(url: String, app: tauri::AppHandle) -> Result<(), InvokeError> 
         // 其余桌面平台（macOS / Linux）：`open` crate 就够了。
         #[cfg(not(any(target_os = "windows", target_os = "android")))]
         {
-            open::that_detached(&url).map_err(|err| anyhow::anyhow!("{err}"))?;
+            if let Err(err) = open::that_detached(&url) {
+                return Err(InvokeError::from_anyhow(anyhow::anyhow!("{err}")));
+            }
             Ok(())
         }
     })()

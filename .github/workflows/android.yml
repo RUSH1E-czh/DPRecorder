@@ -88,10 +88,14 @@ jobs:
           cargo install tauri-cli --version "^2" --locked
           cargo tauri --version
 
+      # DPR/pnpm-workspace.yaml 只有 nodeLinker / confirmModulesPurge 这些配置、没有
+      # `packages:` 字段（本地那套 pnpm 容忍，CI 的 pnpm 直接报
+      # "packages field missing or empty"）。CI 里按「非 workspace 项目」安装即可。
       - name: 前端依赖与产物
+        working-directory: DPR
         run: |
-          pnpm --dir DPR install --frozen-lockfile
-          pnpm --dir DPR build
+          pnpm install --frozen-lockfile --ignore-workspace
+          pnpm build
 
       - name: 生成安卓工程
         working-directory: DPR
@@ -165,10 +169,14 @@ jobs:
       - name: tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
+      # DPR/pnpm-workspace.yaml 只有 nodeLinker / confirmModulesPurge 这些配置、没有
+      # `packages:` 字段（本地那套 pnpm 容忍，CI 的 pnpm 直接报
+      # "packages field missing or empty"）。CI 里按「非 workspace 项目」安装即可。
       - name: 前端依赖与产物
+        working-directory: DPR
         run: |
-          pnpm --dir DPR install --frozen-lockfile
-          pnpm --dir DPR build
+          pnpm install --frozen-lockfile --ignore-workspace
+          pnpm build
 
       - name: 生成安卓工程
         working-directory: DPR
