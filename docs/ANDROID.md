@@ -88,6 +88,27 @@ x86_64 主机版，arm64 机器上没法交叉编译）。第一次 `cargo tauri
 1920×1080 的桌面布局直接塞进手机屏幕会很挤：多窗口（编辑器、调试窗口）在安卓上是
 「同进程另开窗口」还是「整页切换」，需要先定策略再改 Vue 那几处 `WebviewWindow` 调用。
 
+## 云端编译（GitHub Actions）的前置条件
+
+`.github/workflows/android.yml` 推 `DPR/**`、`DPS/dps/**` 或手动触发时跑。它需要两样东西：
+
+1. **私有 git 依赖的凭据**。`Cargo.lock` 里 `dps` 依赖的三个 fork 都在
+   `github.com/2278535805/` 下（`prpr-macroquad`、`prpr-miniquad`、`sasa`），匿名访问是 404 ——
+   也就是说它们是私有仓库（或被删了）。runner 上没有你本机 `~/.cargo/git` 里的那份缓存，
+   所以要么给它凭据，要么把这些依赖 vendor 进仓库：
+   - **凭据**：在 fork 的 Settings → Secrets and variables → Actions 新建 `GIT_DEPS_TOKEN`
+     （细粒度 PAT，对这三个仓库授予 `Contents: Read`）。workflow 会用它配
+     `url.https://x-access-token:<token>@github.com/.insteadOf`，并打开 `net.git-fetch-with-cli`。
+   - **vendor（更稳）**：在有缓存的那台电脑上 `cargo vendor vendor/`，把 `vendor/` 提交进仓库，
+     并让 `.cargo/config.toml` 指向它。这样 CI 与仓库自包含，不依赖任何人的账号。
+   注意：如果这三个仓库属于别人（`2278535805`）且已设为私有，你拿不到令牌，只能走 vendor。
+2. **`prpr-avc` 的 FFmpeg 静态库**。安卓这一侧 `dps` 不开 `video` 特性，所以现在不需要；
+   等接入进程内编码（见上文第 2 项）时，要按 `aarch64-linux-android` 编一份放进
+   `DPS/prpr-avc/static-lib/`。
+
+workflow 里 `cargo check` 的失败会以 annotation 的形式挂到 run 页面上（日志接口要仓库管理权限，
+annotation 匿名可读）。
+
 ## 怎么编（在你自己的 PC 上，这里才是真正验证的地方）
 
 前置：Node.js + pnpm、Rust、Tauri 2 的 Android 环境（JDK 17、Android SDK + NDK、

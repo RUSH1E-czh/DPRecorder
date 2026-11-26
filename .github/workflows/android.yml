@@ -79,14 +79,45 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      # DPS 依赖的 prpr-macroquad / prpr-miniquad / sasa 都在私有仓库里
+      # （匿名访问 404），CI 必须带上只读令牌才拉得下来。令牌放在
+      # Settings → Secrets and variables → Actions → GIT_DEPS_TOKEN。
+      - name: 私有 git 依赖鉴权
+        env:
+          GIT_DEPS_TOKEN: ${{ secrets.GIT_DEPS_TOKEN }}
+        run: |
+          mkdir -p "$HOME/.cargo"
+          printf '\n[net]\ngit-fetch-with-cli = true\n' >> "$HOME/.cargo/config.toml"
+          if [ -n "${GIT_DEPS_TOKEN:-}" ]; then
+            git config --global url."https://x-access-token:${GIT_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            echo "已配置私有依赖仓库的只读令牌"
+          else
+            echo "::warning title=缺少 GIT_DEPS_TOKEN::prpr-macroquad / prpr-miniquad / sasa 是私有仓库，没有令牌 cargo 拉不下来"
+          fi
+
+      - name: 预检 git 依赖
+        run: |
+          if ! cargo fetch --locked --target aarch64-linux-android; then
+            echo "::error title=git 依赖拉取失败::DPS 依赖的 prpr-macroquad / prpr-miniquad / sasa 是私有仓库。请到 Settings → Secrets and variables → Actions 新建 GIT_DEPS_TOKEN（细粒度 PAT，对这三个仓库授予 Contents: Read）后重跑。"
+            exit 1
+          fi
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
+      # tauri-cli 每次 cargo install 都要重编一遍（~10 分钟），单独缓存它的二进制。
+      - name: 缓存 tauri-cli
+        id: tauri-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: tauri-cli
-        run: |
-          cargo install tauri-cli --version "^2" --locked
-          cargo tauri --version
+        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: tauri-cli 版本
+        run: cargo tauri --version
 
       # DPR/pnpm-workspace.yaml 只有 nodeLinker / confirmModulesPurge 这些配置、没有
       # `packages:` 字段（本地那套 pnpm 容忍，CI 的 pnpm 直接报
@@ -164,11 +195,41 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      # DPS 依赖的 prpr-macroquad / prpr-miniquad / sasa 都在私有仓库里
+      # （匿名访问 404），CI 必须带上只读令牌才拉得下来。令牌放在
+      # Settings → Secrets and variables → Actions → GIT_DEPS_TOKEN。
+      - name: 私有 git 依赖鉴权
+        env:
+          GIT_DEPS_TOKEN: ${{ secrets.GIT_DEPS_TOKEN }}
+        run: |
+          mkdir -p "$HOME/.cargo"
+          printf '\n[net]\ngit-fetch-with-cli = true\n' >> "$HOME/.cargo/config.toml"
+          if [ -n "${GIT_DEPS_TOKEN:-}" ]; then
+            git config --global url."https://x-access-token:${GIT_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            echo "已配置私有依赖仓库的只读令牌"
+          else
+            echo "::warning title=缺少 GIT_DEPS_TOKEN::prpr-macroquad / prpr-miniquad / sasa 是私有仓库，没有令牌 cargo 拉不下来"
+          fi
+
+      - name: 预检 git 依赖
+        run: |
+          if ! cargo fetch --locked --target aarch64-linux-android; then
+            echo "::error title=git 依赖拉取失败::DPS 依赖的 prpr-macroquad / prpr-miniquad / sasa 是私有仓库。请到 Settings → Secrets and variables → Actions 新建 GIT_DEPS_TOKEN（细粒度 PAT，对这三个仓库授予 Contents: Read）后重跑。"
+            exit 1
+          fi
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
+      - name: 缓存 tauri-cli
+        id: tauri-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: tauri-cli
+        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "^2" --locked
 
       # DPR/pnpm-workspace.yaml 只有 nodeLinker / confirmModulesPurge 这些配置、没有
