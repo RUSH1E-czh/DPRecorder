@@ -1,7 +1,7 @@
 name: android
 
 # 安卓包在 GitHub 的 runner 上编（手机上没有 NDK，跑不了交叉编译）。
-# 推 DPR / DPS 的改动会自动跑一次；也可以手动触发。
+# 推 DPR / DPS 相关路径会自动跑一次；也可以手动触发。
 on:
   workflow_dispatch:
     inputs:
@@ -16,7 +16,6 @@ on:
       - "DPR/src/**"
       - "DPR/package.json"
       - "DPR/pnpm-lock.yaml"
-      - "DPR/tauri.conf.json"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/android.yml"
@@ -26,12 +25,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
-  NDK_VERSION: "26.1.10909125"
+  CARGO_TERM_COLOR: never
   ANDROID_TARGET: aarch64
 
 jobs:
-  # 先只做类型检查：它比完整打包快，出错也更快看到。
+  # 先只做类型检查：比完整打包快，出错也更快看到。
+  # 编译错误会同时以 annotation 的形式挂到这次 run 上（方便在外面直接读）。
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -50,23 +49,30 @@ jobs:
           node-version: "20"
       - run: corepack enable && corepack prepare pnpm@9 --activate
 
-      - name: Android SDK + NDK
-        uses: android-actions/setup-android@v3
-      - name: 装 NDK
+      # runner 镜像里自带 Android SDK 和若干 NDK，别再装一遍 setup-android（它会因为
+      # 已经存在的 ANDROID_HOME 直接失败）。有现成的 NDK 就用最新的，没有才装。
+      - name: NDK 与交叉编译工具链
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: 交叉编译工具链
-        run: |
-          NDK="$ANDROID_HOME/ndk/${NDK_VERSION}"
-          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          set -eu
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          NDK=$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "${NDK:-}" ] || [ ! -d "$NDK" ]; then
+            yes | sdkmanager --licenses > /dev/null 2>&1 || true
+            sdkmanager "ndk;27.0.12077973" > /dev/null
+            NDK="$SDK/ndk/27.0.12077973"
+          fi
+          BIN=$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)
+          CLANG=$(ls "$BIN"/aarch64-linux-android*-clang | head -1)
           echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
-          echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$CLANG" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${CLANG}++" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG" >> "$GITHUB_ENV"
+          echo "NDK=$NDK"
+          echo "CLANG=$CLANG"
 
       - name: Rust + 安卓目标
         uses: dtolnay/rust-toolchain@stable
@@ -93,7 +99,19 @@ jobs:
 
       - name: cargo check（安卓目标）
         working-directory: DPR
-        run: cargo check -p dpr --target aarch64-linux-android --message-format short
+        run: |
+          set +e
+          cargo check -p dpr --target aarch64-linux-android --message-format short 2>&1 | tee /tmp/check.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # 把前 12 条 rustc 错误挂成 annotation：run 页面上直接能读到，不用翻日志。
+            grep -E "^error(\[|:)" /tmp/check.log | head -12 | while IFS= read -r line; do
+              msg=$(printf '%s' "$line" | sed 's/^error/rustc error/' | cut -c1-400)
+              echo "::error title=cargo check::${msg}"
+            done
+            echo "::error title=cargo check::失败，见上方 annotation 或原始日志"
+          fi
+          exit "$status"
 
   apk:
     needs: check
@@ -114,23 +132,26 @@ jobs:
           node-version: "20"
       - run: corepack enable && corepack prepare pnpm@9 --activate
 
-      - name: Android SDK + NDK
-        uses: android-actions/setup-android@v3
-      - name: 装 NDK
+      - name: NDK 与交叉编译工具链
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: 交叉编译工具链
-        run: |
-          NDK="$ANDROID_HOME/ndk/${NDK_VERSION}"
-          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          set -eu
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          NDK=$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "${NDK:-}" ] || [ ! -d "$NDK" ]; then
+            yes | sdkmanager --licenses > /dev/null 2>&1 || true
+            sdkmanager "ndk;27.0.12077973" > /dev/null
+            NDK="$SDK/ndk/27.0.12077973"
+          fi
+          BIN=$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)
+          CLANG=$(ls "$BIN"/aarch64-linux-android*-clang | head -1)
           echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
-          echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$CLANG" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${CLANG}++" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG" >> "$GITHUB_ENV"
 
       - name: Rust + 安卓目标
         uses: dtolnay/rust-toolchain@stable
@@ -156,16 +177,25 @@ jobs:
       - name: 打包 APK
         working-directory: DPR
         run: |
+          set +e
           cargo tauri android build \
             --target "${{ github.event.inputs.target || env.ANDROID_TARGET }}" \
-            --apk
+            --apk 2>&1 | tee /tmp/build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E "^error(\[|:)" /tmp/build.log | head -12 | while IFS= read -r line; do
+              echo "::error title=apk::$(printf '%s' "$line" | cut -c1-400)"
+            done
+          fi
+          exit "$status"
 
       - name: 收集 APK
+        if: always()
         run: |
           mkdir -p out
-          find DPR/gen/android -name "*.apk" -print -exec cp {} out/ \; || true
-          find target -name "*.apk" -print -exec cp {} out/ \; || true
-          ls -l out
+          find DPR/gen/android -name "*.apk" -exec cp {} out/ \; 2>/dev/null || true
+          find target -name "*.apk" -exec cp {} out/ \; 2>/dev/null || true
+          ls -l out || true
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
